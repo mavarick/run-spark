@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+#encoding:utf8
+
+''' middleware for spark script running on yarn cluster
+mainly to unify the third-part egg packages
+
+author  by: mavarick
+created at: 2015-08-06
+email   to: lxfkxkr@126.com
+'''
+import os
+import sys
+import optparse
+from getopt import getopt
+import ConfigParser
+import subprocess
+
+usage = '''
+USAGE:
+    # to create one config file
+    run-spark -c config.conf
+    # to run spark application
+    run-spark -f config.conf
+
+py_files:
+    bs4 :: 
+    jieba ::
+'''
+config_file = ""
+command = 'spark-submit'
+master_default="yarn-cluster"
+num_executors_default=20
+
+new_config_file=""
+# py files mapper table
+
+sys.path.append("./")
+from py_files_mapper import py_files_mapper
+
+# read arguments
+options, args = getopt(sys.argv[1:], "f:c:", ['file=', 'conf='])
+
+for name, value in options:
+    if name in ("-c", "--conf"):
+        if not value:
+            print usage
+            sys.exit(-1)
+        new_config_file = value
+        if os.path.exists(new_config_file) and os.path.isfile(new_config_file):
+            print("Error: [%s] has already exist"%new_config_file)
+            sys.exit(-1)
+        print >>open(new_config_file, 'w'), """[SPARK]
+master=yarn-cluster
+# support: :bs4:, :jieba:. TODO, comma-seperated
+py_files=bs4
+# add external files to working directory, comma-seperated
+# for `jieba`: 
+#    add your whole 'dict.txt' here and explicitly use 'jieba.initianlize(dictionary='dict.txt')'
+#    the original `dict.txt` is here: /data/common/spark/dict.txt
+files=
+# your running script .py file, TODO
+script_file=
+
+#num_executors=20
+#executor_memory=2G
+#driver_memory=2G
+
+# you could add other pyspark running paramters
+# refer to: http://spark.apache.org/docs/latest/programming-guide.html#overview
+# different style to write parameters in your config file:
+#   --executor-memory=2G (shell style)
+#   executor_memory=2G  (python style, recommanded)
+#   executor-momory=2G  (hybrid style)
+
+# NOTICE:
+#   name below should not be changed
+#   py_files, files, script_file, master. 
+"""
+        print "file: [%s] created successfully"%new_config_file
+        sys.exit(0)
+    if name in ("-f", "--file"):
+        config_file = value
+
+if not os.path.exists(config_file) or not os.path.isfile(config_file):
+    print(usage)
+    sys.exit(-1)
+
+# read configuration
+cf = ConfigParser.ConfigParser()
+cf.read(config_file)
+SECTION = 'SPARK'
+
+spark_conf = cf.items(SECTION)
+config_dict = {}
+for k, v in spark_conf:
+    config_dict[k] = v
+script_file = config_dict.pop("script_file")
+py_files = config_dict.pop("py_files")
+files = config_dict.pop("files")
+master = config_dict.pop("master")
+#num_executors = config_dict.pop("num_executors")
+
+if not script_file:
+    raise Exception("Error: must specify `script_file` in `%s`"%config_file)
+if not os.path.exists(script_file) or not os.path.isfile(script_file):
+    raise Exception("Error: script file `%s` is not exists"%script_file)
+if not master:
+    print("Warn: `master` is not defined, use default '%s'"%master_default)
+    master = master_default
+#if not num_executors:
+#    print("Warn: `num_executors` is not defined, use default: [%s]"%num_executors_default)
+#    num_executors = num_executors_default
+
+# handle the py_files
+if py_files:
+    py_files_list = py_files.split(',')
+    py_files_list = [t.strip() for t in py_files_list]
+    py_files_format = [py_files_mapper.get(f, f) for f in py_files_list]
+    py_files = ','.join(py_files_format)
+
+if files:
+    files_list = files.split(',')
+    files_list = [t.strip() for t in files_list]
+    files_format = files_list
+    files = ','.join(files_format)
+
+# combine the spark script
+cmd = [command, "--master %s"%master]
+if py_files:
+    cmd.append("--py-files %s"%py_files)
+#if num_executors:
+#    cmd.append("--num-executors %s"%num_executors)
+if files:
+    cmd.append("--files %s"%files)
+
+# add other configurations
+for k, v in config_dict.iteritems():
+    field = k.strip().replace("_", "-")
+    if not field.startswith("--"):
+        field = '--'+field
+    cmd.append("%s %s"%(field, v))
+
+cmd.append(script_file)
+cmd_str = ' '.join(cmd)
+print "CMD: %s"%cmd_str
+
+# run the spark command
+p = subprocess.Popen(cmd_str, shell=True)
+p.wait()
+print '*'*30, "Done!"
